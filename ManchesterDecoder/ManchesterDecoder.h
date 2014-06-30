@@ -19,7 +19,7 @@
 #define LONG_PULSE 1
 #define SHORT_PULSE 0
 
-#define DEFAULT_SIZE 0xFFu
+#define DEFAULT_SIZE 128u
 #define RESET 0xFFu
 #define ONE 0x08u
 #define ZERO 0x00u
@@ -28,7 +28,7 @@ class ManchesterDecoder{
 public:
 	ManchesterDecoder();
 	~ManchesterDecoder();
-	uint8_t getNextData();
+	uint8_t getNextPulse();
 	void reset();
 private:
 	static void isr2();
@@ -41,9 +41,10 @@ private:
 	uint8_t halfClock;
 	boolean start;
 	volatile word pulse;
+	// The input buffer
 	WordBuffer *pulse_buffer;
+	// The output buffer
 	WordBuffer *data_buffer;
-	
 };
 
 #endif // MANCHESTER_DECODER_H
