@@ -12,8 +12,8 @@ ManchesterDecoder::ManchesterDecoder(){
 	// Configures the interrupt pin with internal pullup resistor
   	digitalWrite(3, 1);
   	// Allocates memory for the buffers
-	data_buffer = new WordBuffer(150);
-	pulse_buffer = new WordBuffer(150);
+	data_buffer = new WordBuffer(DEFAULT_SIZE);
+	pulse_buffer = new WordBuffer(DEFAULT_SIZE);
 	// Initializes the member variables
 	halfClock = 1;
 	start = true;
@@ -67,15 +67,17 @@ void ManchesterDecoder::reset(){
 	start = true;
 }
 
-uint8_t ManchesterDecoder::getNextPulse(){
-	do{
+boolean ManchesterDecoder::hasNextPulse(){
+	if(!pulse_buffer->isEmpty()){
 		while(!pulse_buffer->isEmpty()){
 			decode(pulse_buffer->remove());
 		}
-	}while(data_buffer->isEmpty());
+	}
+	return !data_buffer->isEmpty();
+}
+
+uint8_t ManchesterDecoder::getNextPulse(){
 	return data_buffer->remove();
-	
-	return -1;
 }
 
 void ManchesterDecoder::toggle(unsigned int *state){

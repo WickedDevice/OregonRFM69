@@ -2,6 +2,7 @@
 
 OregonScientific::OregonScientific(){
 	data = new uint8_t[DEFAULT_SIZE];
+	numSensors = 0;
 	messageSize = DEFAULT_SIZE;
 	reset();
 }
@@ -27,53 +28,62 @@ void OregonScientific::reset(){
   	}
 }
 
+OregonScientificSensor* OregonScientific::getCurrentSensor(){
+	return currentSensor;
+}
 
 void OregonScientific::printResults(uint8_t protocol){
   Serial.println();
   switch(protocol){
   case OSCV_3:
-	Serial.print("OSCV_3:\t");
+	Serial.print(F("OSCV_3:\t"));
 	break;
   case OSCV_2_1:
-	Serial.print("OSCV_2_1:\t");
+	Serial.print(F("OSCV_2_1:\t"));
 	break;
   }
   for(int i = DEV_ID_BEGIN; i < idx; i++){
 	Serial.print(data[i], HEX);
   }
   Serial.println();
-  Serial.print("Dev ID:\t\t");
+  Serial.print(F("Dev ID:\t\t"));
   for(int i = DEV_ID_BEGIN; i <= DEV_ID_END; i++){
 	Serial.print(data[i], HEX);
   }
-  Serial.print("\nChannel:\t");
+  Serial.print(F("\nBattery:\t"));
+  if(data[FLAGS] >> 2){
+  	Serial.println(F("Low"));
+  }else{
+  	Serial.println(F("Ok"));
+  }
+  Serial.print(F("Channel:\t"));
   if(protocol == OSCV_3){
   	Serial.println(data[CHANNEL_NIBBLE]);
   }else{
   	switch(data[CHANNEL_NIBBLE]){
-  		case 0x01: Serial.println("1");
+  		case 0x01: Serial.println(F("1"));
   		break;
-  		case 0x02: Serial.println("2");
+  		case 0x02: Serial.println(F("2"));
   		break;
-  		case 0x04: Serial.println("3");
+  		case 0x04: Serial.println(F("3"));
   		break;
-  		default: Serial.println("Channel Error");
+  		default: Serial.println(F("Channel Error"));
   	}
   }
-  Serial.print("Temp:\t\t");
+  Serial.print(F("Temp:\t\t"));
   if(!(data[13] & 0x08) >> 3){
-	Serial.print('-');
+	Serial.print(F("-"));
   }
   Serial.print(data[10], HEX);
   Serial.print(data[9], HEX);
-  Serial.print(".");
+  Serial.print(F("."));
   Serial.print(data[8], HEX);
-  Serial.println("C");
+  Serial.println(F("C"));
   if(protocol == OSCV_2_1){
-	Serial.print("Humidity:\t");
+	Serial.print(F("Humidity:\t"));
 	Serial.print(data[13], HEX);
 	Serial.print(data[12], HEX);
-	Serial.println("%\n");
+	Serial.println(F("%\n"));
   }
 }
 
@@ -84,40 +94,50 @@ boolean OregonScientific::parseOregonScientificV2(uint8_t value){
 	}
 	bitCount++;
 	if(bitCount & 0x01){
-
 		data[idx] = data[idx] >> 1;
 		data[idx] = data[idx] | value;
 
 		switch(state){
 			case SYNCING:
 				if(data[idx] == 0x0A){
-					state = IN_SYNC;
-					//idx++;
+					state = GET_ID;
 					subNibbleCount = 0;
 				}
 				break;
-			case IN_SYNC:
-				if ((subNibbleCount & 0x03) == 3)
-				{
-					//Serial.println(data[idx], HEX);
+			case GET_ID:
+				if ((subNibbleCount & 0x03) == 3){
 					idx++;
 				}
 				subNibbleCount++;
-				if(idx >= 18){
+				if (idx > CHANNEL_NIBBLE){
+					if(findSensor()){
+						state = GET_MSG;
+						//messageSize = currentSensor->getMessageSize();
+					}else{
+						state = SYNCING;
+					}
+
+				}
+				break;
+			case GET_MSG:
+				if ((subNibbleCount & 0x03) == 3){
+					idx++;
+				}
+				subNibbleCount++;
+				if(idx >= messageSize){
 					state = DONE;
 				}
 				break;
 			case DONE:
-				return validate(15);
+				currentSensor->makeJSONMessage(data);
+				return validate(messageSize-3);
 		}
 	}
 	return false;
 }
 
 boolean OregonScientific::parseOregonScientificV3(uint8_t value){
-	//subNibbleCount++;
 	if(idx > messageSize){
-		//reset();
 		return false;
 	}
 	data[idx] = data[idx] >> 1;
@@ -126,37 +146,73 @@ boolean OregonScientific::parseOregonScientificV3(uint8_t value){
 	switch(state){
 			case SYNCING:
 				if(data[idx] == 0x0A){
-					state = IN_SYNC;
+					state = GET_ID;
 					//idx++;
 					subNibbleCount = 0;
 				}
 				break;
-			case IN_SYNC:
-				if ((subNibbleCount & 0x03) == 3)
-				{
+			case GET_ID:
+				if ((subNibbleCount & 0x03) == 3){
 					idx++;
 				}
 				subNibbleCount++;
-				if(idx >= 15 && data[DEV_ID_BEGIN] == 0x0C){
+				if (idx > CHANNEL_NIBBLE){
+					if(findSensor()){
+						state = GET_MSG;
+						//messageSize = currentSensor->getMessageSize();
+					}else{
+						state = SYNCING;
+					}
+				}
+				break;
+			case GET_MSG:
+				if ((subNibbleCount & 0x03) == 3){
+					idx++;
+				}
+				subNibbleCount++;
+				if(idx >= messageSize){
 					state = DONE;
 				}
 				break;
 			case DONE:
-				return validate(12);
+				currentSensor->makeJSONMessage(data);
+				return validate(messageSize-3);
 		}
 	return false;
 }
 
-boolean OregonScientific::validate(uint8_t value){
-	uint8_t chksum_dev = (data[value+1] << 4) | data[value];
-	uint8_t chksum_cmp = 0;
-	for(uint8_t i = DEV_ID_BEGIN; i < value; i++){
-		chksum_cmp += data[i];
+void OregonScientific::addSensor(OregonScientificSensor *sen1){
+	sensors[numSensors] = sen1;
+	numSensors++;
+}
+
+boolean OregonScientific::findSensor(){
+	id_type temp;
+	// Reverse copy the data into the union to convert
+	// the dev_id to an integer representation.
+	for(uint8_t i = 0; i < 4; i++){
+		temp.array[i] = data[DEV_ID_END-i];
 	}
-	Serial.println(chksum_cmp);
-	Serial.println(chksum_dev);
-	if(chksum_cmp == chksum_dev){
-		return true;
+	// Check all the sensors to find the sensor that matches the dev ID and channel
+	for (uint8_t i = 0; i < numSensors; i++){
+		if(sensors[i]->getSensorID() == temp.value && 
+			sensors[i]->getSensorChannel() == data[CHANNEL_NIBBLE]){
+			currentSensor = sensors[i];
+			messageSize = currentSensor->getMessageSize();
+			return true;
+		}
 	}
 	return false;
+}
+
+boolean OregonScientific::validate(uint8_t value){
+	// Converts the checksum to a single integer value for comparison
+	uint8_t chksum_dev = (data[value+1] << 4) | data[value];
+	uint8_t chksum_computed = 0;
+	// Computes the checksum of the message
+	for(uint8_t i = DEV_ID_BEGIN; i < value; i++){
+		chksum_computed += data[i];
+	}
+
+	return (chksum_computed == chksum_dev);
 }
